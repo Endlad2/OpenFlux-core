@@ -51,6 +51,7 @@ jobs:
         run: go build -trimpath -ldflags "-s -w" -o openflux .
 
       - name: Package
+        shell: bash
         run: |
           tar czf ${{ matrix.archive }}.tar.gz openflux
           sha256sum ${{ matrix.archive }}.tar.gz > ${{ matrix.archive }}.tar.gz.sha256
@@ -63,17 +64,23 @@ jobs:
             ${{ matrix.archive }}.tar.gz.sha256
 
   build-mobile:
-    name: Mobile cores (${{ matrix.target }})
+    name: Android cores (${{ matrix.abi }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64
+          - abi: arm64-v8a
+            goarch: arm64
+            cc: aarch64-linux-android21-clang
             archive: openflux-android-arm64
-          - target: arm
+          - abi: armeabi-v7a
+            goarch: arm
+            cc: armv7a-linux-androideabi21-clang
             archive: openflux-android-armv7
-          - target: x86_64
+          - abi: x86_64
+            goarch: amd64
+            cc: x86_64-linux-android21-clang
             archive: openflux-android-x86_64
     steps:
       - uses: actions/checkout@v4
@@ -83,19 +90,31 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Set up Android NDK
-        run: |
-          NDK_DIR=$(ls -d $ANDROID_SDK_ROOT/ndk/*/ 2>/dev/null | sort -V | tail -n1)
-          echo "ANDROID_NDK_HOME=${NDK_DIR%/}" >> $GITHUB_ENV
-
       - name: Build Android core
-        run: bash ./build_android.sh ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -e
+          NDK_DIR=$(ls -d "${ANDROID_NDK_HOME:-$ANDROID_SDK_ROOT/ndk/*}" 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$NDK_DIR" ]; then
+            NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT/ndk/"*/ | sort -V | tail -n1)
+          fi
+          echo "Using NDK: $NDK_DIR"
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          if [ ! -d "$TOOLCHAIN" ]; then
+            TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+          fi
+          export CC="$TOOLCHAIN/${{ matrix.cc }}"
+          export CXX="$TOOLCHAIN/${{ matrix.cc }}++"
+          mkdir -p out/android/${{ matrix.abi }}
+          GOOS=android GOARCH=${{ matrix.goarch }} CGO_ENABLED=1 \
+            go build -trimpath -ldflags "-s -w" -o out/android/${{ matrix.abi }}/openflux .
 
       - name: Package
+        shell: bash
         run: |
-          mkdir -p out
-          cp -r android/* out/ 2>/dev/null || true
-          cd out && zip -r ../${{ matrix.archive }}.zip . && cd -
+          cd out
+          zip -r ../${{ matrix.archive }}.zip android
+          cd ..
           sha256sum ${{ matrix.archive }}.zip > ${{ matrix.archive }}.zip.sha256
 
       - uses: actions/upload-artifact@v4
@@ -120,16 +139,20 @@ jobs:
         run: bash ./build_ios.sh
 
       - name: Package
+        shell: bash
         run: |
-          zip -r openflux-ios.xcframework.zip ios-app 2>/dev/null || zip -r openflux-ios.zip . -i '*.xcframework' '*.a' '*.h'
-          shasum -a 256 openflux-ios*.zip > openflux-ios.zip.sha256 2>/dev/null || true
+          mkdir -p out
+          cp -r output/ios/* out/ 2>/dev/null || true
+          ls -la out || true
+          cd out && zip -r ../openflux-ios.zip . && cd -
+          shasum -a 256 openflux-ios.zip > openflux-ios.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: openflux-ios
           path: |
-            openflux-ios*.zip
-          if-no-files-found: warn
+            openflux-ios.zip
+            openflux-ios.zip.sha256
 
   release:
     name: Publish release
