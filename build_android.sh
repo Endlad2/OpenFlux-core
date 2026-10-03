@@ -1,28 +1,13 @@
-#!/bin/bash
-set -e
-
-ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/27.0.12077973}"
-OUTPUT_DIR="output/android/arm64-v8a"
-BINARY_NAME="openflux"
-
-mkdir -p "$OUTPUT_DIR"
-
-export GOARCH=arm64
-export GOOS=android
-export CGO_ENABLED=1
-export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang"
-export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang++"
-export CGO_CFLAGS="-march=armv8-a -O2"
-export CGO_CXXFLAGS="-march=armv8-a -O2"
-export CGO_LDFLAGS="-Wl,-rpath,/system/lib64 -Wl,-rpath,/vendor/lib64"
-
-go build \
-    -v \
-    -ldflags="-s -w -linkmode external -extldflags '-Wl,-rpath,/system/lib64 -Wl,-rpath,/vendor/lib64' -checklinkname=0" \
-    -o "$OUTPUT_DIR/$BINARY_NAME" \
-    .
-
-if [ -f "$OUTPUT_DIR/$BINARY_NAME" ]; then
-    echo "Build successful: $OUTPUT_DIR/$BINARY_NAME"
-    file "$OUTPUT_DIR/$BINARY_NAME"
-fi
+#!/usr/bin/env bash
+# Legacy entry point kept for compatibility. The Android client builds the
+# gomobile library from the mobile/ package itself (see
+# scripts/build-android-core.sh, and OpenFluxAndroid's own copy of the same
+# script). This wrapper just forwards to it.
+#
+# The old version of this file ran `go build -o output/android/.../openflux .`,
+# which produced the CLI binary (with main.go, flag parsing, tun_darwin.go,
+# signals_*.go, bench.go ...). That is not what an Android app links against:
+# the app wants a .aar from `gomobile bind` over mobile/. Kept as a shim so
+# anyone with muscle memory for ./build_android.sh still gets the right thing.
+set -euo pipefail
+exec "$(dirname "$0")/scripts/build-android-core.sh" "$@"

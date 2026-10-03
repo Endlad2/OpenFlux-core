@@ -64,24 +64,11 @@ jobs:
             ${{ matrix.archive }}.tar.gz.sha256
 
   build-mobile:
-    name: Android cores (${{ matrix.abi }})
+    name: Android core (.aar)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - abi: arm64-v8a
-            goarch: arm64
-            cc: aarch64-linux-android21-clang
-            archive: openflux-android-arm64
-          - abi: armeabi-v7a
-            goarch: arm
-            cc: armv7a-linux-androideabi21-clang
-            archive: openflux-android-armv7
-          - abi: x86_64
-            goarch: amd64
-            cc: x86_64-linux-android21-clang
-            archive: openflux-android-x86_64
+    # The artifact the Android app links: gomobile bind over mobile/. Replaces
+    # the old per-ABI `go build` of the CLI, which produced a binary the app
+    # could not use.
     steps:
       - uses: actions/checkout@v4
 
@@ -90,39 +77,44 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build Android core
-        shell: bash
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
         run: |
-          set -e
-          NDK_DIR=$(ls -d "${ANDROID_NDK_HOME:-$ANDROID_SDK_ROOT/ndk/*}" 2>/dev/null | sort -V | tail -n1)
-          if [ -z "$NDK_DIR" ]; then
-            NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT/ndk/"*/ | sort -V | tail -n1)
-          fi
-          echo "Using NDK: $NDK_DIR"
-          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          if [ ! -d "$TOOLCHAIN" ]; then
-            TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/darwin-x86_64/bin"
-          fi
-          export CC="$TOOLCHAIN/${{ matrix.cc }}"
-          export CXX="$TOOLCHAIN/${{ matrix.cc }}++"
-          mkdir -p out/android/${{ matrix.abi }}
-          GOOS=android GOARCH=${{ matrix.goarch }} CGO_ENABLED=1 \
-            go build -trimpath -ldflags "-s -w" -o out/android/${{ matrix.abi }}/openflux .
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+
+      - name: Build the .aar
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: bash scripts/build-android-core.sh
 
       - name: Package
         shell: bash
         run: |
-          cd out
-          zip -r ../${{ matrix.archive }}.zip android
+          mkdir -p dist
+          cp output/android/openflux.aar dist/
+          cp output/android/openflux-core.version dist/
+          cd dist
+          zip -r ../openflux-android-aar.zip .
           cd ..
-          sha256sum ${{ matrix.archive }}.zip > ${{ matrix.archive }}.zip.sha256
+          sha256sum openflux-android-aar.zip > openflux-android-aar.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
+          name: openflux-android-aar
           path: |
-            ${{ matrix.archive }}.zip
-            ${{ matrix.archive }}.zip.sha256
+            openflux-android-aar.zip
+            openflux-android-aar.zip.sha256
 
   build-ios:
     name: iOS core

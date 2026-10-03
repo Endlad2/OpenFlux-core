@@ -31,10 +31,17 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Build
+      - name: Build (CLI, desktop/exit)
         env:
           CGO_ENABLED: "0"
         run: go build -trimpath ./...
+
+      - name: Build (mobile bridge, host cgo)
+        # Catches syntax/dep drift in mobile/mobile.go even without an Android
+        # NDK. gomobile bind itself is exercised by the android-core job below.
+        env:
+          CGO_ENABLED: "1"
+        run: go build -trimpath ./mobile/...
 
   test:
     name: Test
@@ -48,7 +55,13 @@ jobs:
           cache: true
 
       - name: Test
-        run: go test ./... || true
+        # The existing test job historically swallowed failures with `|| true`;
+        # keep that for now so an unrelated flaky test does not block the
+        # release, but print the exit code.
+        run: |
+          set +e
+          go test ./...
+          echo "go test exit=$?"
 
   cross:
     name: Cross-build smoke (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -73,9 +86,64 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build
+      - name: Build CLI
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: go build -trimpath -o /dev/null .
+
+  android-core:
+    name: Android core (gomobile bind)
+    runs-on: ubuntu-latest
+    # Builds the .aar the Android app links against, so a broken mobile/
+    # package fails CI here instead of in the app's release job.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK components
+        run: |
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+
+      - name: Build the .aar
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: bash scripts/build-android-core.sh
+
+      - name: Verify the Java class name
+        # The Android app imports io.openflux.bridge.mobile.Mobile; a rename
+        # here would break every Kotlin call site, so guard it explicitly.
+        run: |
+          set -e
+          unzip -l output/android/openflux.aar | grep -q 'classes.jar' || {
+            echo "openflux.aar has no classes.jar" >&2; exit 1; }
+          mkdir -p /tmp/aar && cd /tmp/aar
+          unzip -o "$GITHUB_WORKSPACE/output/android/openflux.aar" classes.jar >/dev/null
+          unzip -l classes.jar | tee /tmp/classes.txt
+          grep -q 'io/openflux/bridge/mobile/Mobile.class' /tmp/classes.txt || {
+            echo "expected io/openflux/bridge/mobile/Mobile.class in the .aar" >&2
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflux-aar
+          path: output/android/openflux.aar
+          if-no-files-found: error
