@@ -81,26 +81,26 @@ thing that differs (gomobile for Android, cgo `//export` for iOS).
 scripts/build-android-core.sh
 
 Needs Go, `gomobile` (`go install golang.org/x/mobile/cmd/gomobile@latest`)
-and the Android SDK with NDK 27. The script finds the SDK via `ANDROID_HOME` /
-`ANDROID_SDK_ROOT` / the usual default locations, and NDK 27 via
-`ANDROID_NDK_HOME` or `<sdk>/ndk/27.0.12077973`.
+and the Android SDK with NDK 27.
 
-`build_android.sh` at the repo root is a thin shim that forwards to the same
-script, kept because the old name is muscle memory.
+### What the script looks for
 
-## Why the old `build_android.sh` was wrong
+1. **SDK:** `ANDROID_HOME` → `ANDROID_SDK_ROOT` → the conventional per-OS
+locations (`~/Library/Android/sdk`, `~/Android/Sdk`, `%LOCALAPPDATA%\Android\Sdk`).
+2. **NDK:** `ANDROID_NDK_HOME` first, otherwise the newest `$SDK/ndk/<ver>`
+directory (sort -V, so `27.0.12077973` beats `26.x`).
 
-The previous version ran `go build -o output/android/.../openflux .`, which
-builds the **CLI binary** — the one with flag parsing, `tun_darwin.go`,
-`signals_*.go`, `bench.go`, etc. An Android app cannot link against that: it
-needs a `.aar` produced by `gomobile bind` over a package that exports a
-`Mobile` Java class. That is what `scripts/build-android-core.sh` (and the
-`mobile/` package) provide.
+It prints both paths before building. If it fails, the error names every
+location it tried.
 
-The CI job `android-core` in `.github/workflows/ci.yml` builds the `.aar` on
-every push and asserts that the Java class inside it is
-`io/openflux/bridge/mobile/Mobile.class`, so a rename in `mobile/` fails CI
-before it fails the app.
+### Why the previous CI run failed
+
+`env.ANDROID_HOME` in a GitHub Actions workflow is **not** the runner's own
+`ANDROID_HOME`. `${{ env.ANDROID_HOME }}` only sees variables declared in the
+workflow's `env:` block, so it expanded to the empty string and produced
+`/ndk/27.0.12077973`. The NDK dir obviously did not exist there. The current
+CI computes `ANDROID_NDK_HOME` **inside the shell** from `$ANDROID_HOME`
+(the runner's variable) and passes it to the script.
 
 ## Interop with the OpenFluxAndroid app
 
@@ -111,4 +111,21 @@ scripts must produce the same Java class name and the same API — hence the
 `-checklinkname=0 -s -w` linker flags ([github.com/wlynxg/anet](https://github.com/wlynxg/anet), pulled in by the
 oneme/WebRTC transport, still uses a `//go:linkname` the Go linker rejects
 since 1.23).
+
+</BDS:create_file>
+<BDS:create_file fileName="OpenFlux-core/build_android.sh">
+
+```bash
+#!/usr/bin/env bash
+# Legacy entry point kept for compatibility. The Android client builds the
+# gomobile library from the mobile/ package itself (see
+# scripts/build-android-core.sh). This wrapper just forwards to it, so anyone
+# with muscle memory for ./build_android.sh gets the right thing.
+#
+# The old version of this file ran `go build -o output/android/.../openflux .`,
+# which produced the CLI binary (with main.go, flag parsing, tun_darwin.go,
+# signals_*.go, bench.go ...). That is not what an Android app links against:
+# the app wants a .aar from `gomobile bind` over mobile/.
+set -euo pipefail
+exec "$(dirname "$0")/scripts/build-android-core.sh" "$@"
 

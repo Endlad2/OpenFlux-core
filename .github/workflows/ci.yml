@@ -15,6 +15,10 @@ concurrency:
 
 env:
   GO_VERSION: "1.26.4"
+  # Runner-provided on ubuntu-latest; kept here explicitly so the android-core
+  # job does not depend on ${{ env.ANDROID_HOME }} (which is empty — env.* only
+  # contains what this file sets, not the runner's own environment).
+  ANDROID_NDK_VERSION: "27.0.12077973"
 
 jobs:
   build:
@@ -112,10 +116,17 @@ jobs:
           java-version: '17'
 
       - name: Install Android SDK components
+        # $ANDROID_HOME here is the runner's environment variable, not a
+        # workflow env.* entry — that is why we read it as a shell variable
+        # instead of via ${{ env.ANDROID_HOME }} (which would be empty).
         run: |
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$SDK" ] || { echo "ANDROID_HOME/ANDROID_SDK_ROOT not set" >&2; exit 1; }
+          echo "SDK=$SDK"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
         run: |
@@ -123,19 +134,28 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
       - name: Build the .aar
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: bash scripts/build-android-core.sh
+        # Set ANDROID_NDK_HOME to the actual path just installed, computed in
+        # the shell. Do NOT use ${{ env.ANDROID_HOME }} — it is empty.
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          export ANDROID_HOME="$SDK"
+          export ANDROID_SDK_ROOT="$SDK"
+          export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing" >&2; exit 1; }
+          bash scripts/build-android-core.sh
 
       - name: Verify the Java class name
         # The Android app imports io.openflux.bridge.mobile.Mobile; a rename
         # here would break every Kotlin call site, so guard it explicitly.
         run: |
           set -e
-          unzip -l output/android/openflux.aar | grep -q 'classes.jar' || {
-            echo "openflux.aar has no classes.jar" >&2; exit 1; }
-          mkdir -p /tmp/aar && cd /tmp/aar
-          unzip -o "$GITHUB_WORKSPACE/output/android/openflux.aar" classes.jar >/dev/null
+          AAR="output/android/openflux.aar"
+          [ -f "$AAR" ] || { echo "$AAR was not produced" >&2; exit 1; }
+          unzip -l "$AAR" | grep -q 'classes.jar' || { echo "$AAR has no classes.jar" >&2; exit 1; }
+          rm -rf /tmp/aar && mkdir -p /tmp/aar && cd /tmp/aar
+          unzip -o "$GITHUB_WORKSPACE/$AAR" classes.jar >/dev/null
           unzip -l classes.jar | tee /tmp/classes.txt
           grep -q 'io/openflux/bridge/mobile/Mobile.class' /tmp/classes.txt || {
             echo "expected io/openflux/bridge/mobile/Mobile.class in the .aar" >&2

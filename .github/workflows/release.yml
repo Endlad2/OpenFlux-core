@@ -11,6 +11,7 @@ permissions:
 
 env:
   GO_VERSION: "1.26.4"
+  ANDROID_NDK_VERSION: "27.0.12077973"
 
 jobs:
   build-desktop:
@@ -84,9 +85,12 @@ jobs:
 
       - name: Install Android SDK components
         run: |
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$SDK" ] || { echo "ANDROID_HOME/ANDROID_SDK_ROOT not set" >&2; exit 1; }
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
         run: |
@@ -94,13 +98,19 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
       - name: Build the .aar
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: bash scripts/build-android-core.sh
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          export ANDROID_HOME="$SDK"
+          export ANDROID_SDK_ROOT="$SDK"
+          export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
+          [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing: $ANDROID_NDK_HOME" >&2; exit 1; }
+          bash scripts/build-android-core.sh
 
       - name: Package
         shell: bash
         run: |
+          set -e
           mkdir -p dist
           cp output/android/openflux.aar dist/
           cp output/android/openflux-core.version dist/

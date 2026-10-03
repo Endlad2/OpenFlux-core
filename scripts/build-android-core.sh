@@ -36,24 +36,61 @@ else
 fi
 mkdir -p "$out"
 
-sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+# --- SDK discovery -----------------------------------------------------------
+# Order matters: if the caller explicitly set ANDROID_HOME, that wins. The
+# sdkmanager-installed SDK on a GitHub runner is exactly ANDROID_HOME. On a
+# developer machine it is usually ANDROID_HOME, then ANDROID_SDK_ROOT, then
+# one of the conventional per-OS locations.
+sdk="${ANDROID_HOME:-}"
+[ -n "$sdk" ] || sdk="${ANDROID_SDK_ROOT:-}"
 if [ -z "$sdk" ]; then
-  for guess in "${LOCALAPPDATA:-}/Android/Sdk" "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
-    [ -d "$guess" ] && sdk=$guess && break
+  for guess in \
+    "${LOCALAPPDATA:-}/Android/Sdk" \
+    "$HOME/Library/Android/sdk" \
+    "$HOME/Android/Sdk"; do
+    [ -n "$guess" ] && [ -d "$guess" ] && sdk="$guess" && break
   done
 fi
-[ -d "$sdk" ] || { echo "Android SDK not found: set ANDROID_HOME" >&2; exit 1; }
-ndk=${ANDROID_NDK_HOME:-$sdk/ndk/27.0.12077973}
-[ -d "$ndk" ] || { echo "Android NDK not found at $ndk: set ANDROID_NDK_HOME" >&2; exit 1; }
+[ -n "$sdk" ] && [ -d "$sdk" ] || {
+  echo "Android SDK not found: set ANDROID_HOME (or ANDROID_SDK_ROOT)" >&2
+  exit 1
+}
 
+# --- NDK discovery -----------------------------------------------------------
+# Accept an explicit ANDROID_NDK_HOME first (that is what CI sets), then the
+# side-by-side install under the SDK. Do NOT default to a hard-coded version
+# path that may not exist — list what is there and pick the newest rXX, so a
+# fresh `sdkmanager "ndk;27.0.12077973"` keeps working even if the folder name
+# differs on some installs.
+ndk="${ANDROID_NDK_HOME:-}"
+if [ -z "$ndk" ]; then
+  if [ -d "$sdk/ndk" ]; then
+    # Highest version wins (sort -V), ignoring "source.properties" and friends.
+    ndk=$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
+          | sort -V | tail -n1)
+    [ -n "$ndk" ] && ndk="$sdk/ndk/$ndk"
+  fi
+fi
+[ -n "$ndk" ] && [ -d "$ndk" ] || {
+  echo "Android NDK not found. Set ANDROID_NDK_HOME, or install one with:" >&2
+  echo "  sdkmanager \"ndk;27.0.12077973\"" >&2
+  echo "Looked in: ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-<unset>} and $sdk/ndk/*" >&2
+  exit 1
+}
+echo "Using SDK: $sdk"
+echo "Using NDK: $ndk"
+
+# --- gomobile ----------------------------------------------------------------
 gomobile=${GOMOBILE_BIN:-$(command -v gomobile || true)}
-[ -n "$gomobile" ] || gomobile=$(go env GOPATH)/bin/gomobile
+[ -n "$gomobile" ] || gomobile="$(go env GOPATH)/bin/gomobile"
 [ -x "$gomobile" ] || [ -x "$gomobile.exe" ] || {
   echo "gomobile not found: go install golang.org/x/mobile/cmd/gomobile@latest" >&2
   exit 1
 }
 
-export ANDROID_HOME=$sdk ANDROID_SDK_ROOT=$sdk ANDROID_NDK_HOME=$ndk
+export ANDROID_HOME="$sdk"
+export ANDROID_SDK_ROOT="$sdk"
+export ANDROID_NDK_HOME="$ndk"
 export PATH="$(dirname "$gomobile"):$PATH"
 # gomobile's javac reads the generated sources (Russian doc comments) in the
 # platform encoding, which is not UTF-8 on Windows.
@@ -71,7 +108,12 @@ trap '[ -s "$out/openflux.aar" ] || rm -f "$out/openflux.aar"' EXIT
   .)
 rm -f "$out/openflux-sources.jar"
 
-branch=$(git -C "$core" rev-parse --abbrev-ref HEAD)
-rev=$(git -C "$core" describe --always --dirty)
-printf '%s@%s\n' "$branch" "$rev" > "$out/openflux-core.version"
+# The version marker: the app shows it under Settings → About.
+if git -C "$core" rev-parse --git-dir >/dev/null 2>&1; then
+  branch=$(git -C "$core" rev-parse --abbrev-ref HEAD)
+  rev=$(git -C "$core" describe --always --dirty)
+  printf '%s@%s\n' "$branch" "$rev" > "$out/openflux-core.version"
+else
+  printf 'unknown@unknown\n' > "$out/openflux-core.version"
+fi
 echo "core $(cat "$out/openflux-core.version") -> $out/openflux.aar"
