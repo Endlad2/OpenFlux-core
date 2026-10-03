@@ -1,6 +1,22 @@
+// The module path matches the imports in this repo (openflux/transport,
+// openflux/tunnel, ...). Do not rename it without updating every import.
 module openflux
 
+// Go 1.24 is where `tool` directives were introduced. The exact revision of
+// golang.org/x/mobile lives in the require/tool lines below; bump both
+// together (see MOBILE.md).
 go 1.24
+
+// --- Third-party modules the repo already depends on -----------------------
+//
+// The list below is what `go mod tidy` on this tree produces. It is NOT meant
+// to be hand-edited: after adding a new import anywhere in the module, run
+//
+//     go mod tidy
+//
+// and commit both go.mod and go.sum. A hand-written require line without a
+// matching go.sum entry is exactly what makes `go build`/`go vet` fail with
+// "missing go.sum entry for module providing package ...".
 
 require (
 	github.com/gorilla/websocket v1.5.3
@@ -36,11 +52,20 @@ require (
 	golang.org/x/time v0.9.0 // indirect
 )
 
-// The gomobile toolchain. In Go 1.24+ `gomobile bind` refuses to run when
-// golang.org/x/mobile is not in the module graph (go.dev/issue/77183):
-// "gomobile bind requires golang.org/x/mobile in the current module".
-// The tool directive keeps it there across `go mod tidy`, matching the
-// version CI installs into $GOBIN (see .github/workflows/*.yml).
+// --- gomobile bind needs x/mobile in the module graph -----------------------
+//
+// Go 1.24's gomobile refuses to run when golang.org/x/mobile is not part of
+// the current module (go.dev/issue/77183). The tool directive below is what
+// records it, and mobile/bind_tool.go (//go:build tools) keeps the blank
+// import reachable across `go mod tidy`.
+//
+// To (re)create these two lines:
+//
+//     go get -tool golang.org/x/mobile/cmd/gobind
+//     go mod tidy
+//
+// CI (.github/workflows/ci.yml, job android-core) runs the same and then
+// asserts the module is still here, so a future tidy cannot silently drop it.
 tool golang.org/x/mobile/cmd/gobind
 
 require golang.org/x/mobile v0.0.0-20260908204917-8b95e45f8d3e

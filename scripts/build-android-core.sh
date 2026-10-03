@@ -40,6 +40,17 @@ EOF
   exit 1
 fi
 
+# ---- preflight: go.sum is consistent with go.mod --------------------------
+# `go mod tidy` is what repairs go.sum after a go.mod edit. Do it here rather
+# than in CI alone, so a local build and CI agree, and the "missing go.sum
+# entry for module providing package X" class of failures cannot reach
+# gomobile bind.
+if ! (cd "$core" && go mod tidy >/dev/null 2>&1); then
+  echo "go mod tidy failed; run it manually and fix the first error:" >&2
+  (cd "$core" && go mod tidy) >&2 || true
+  exit 1
+fi
+
 # Output goes to the Android app's libs/ when we are inside it, otherwise to
 # the core's own output/ so a standalone build still works.
 if [ -d "$root/androidApp/libs" ]; then
