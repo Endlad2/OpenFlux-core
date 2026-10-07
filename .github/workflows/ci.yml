@@ -126,7 +126,12 @@ jobs:
             "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
+        # Modern gomobile refuses to run unless golang.org/x/mobile is part of
+        # THIS module's dependency graph. `go get -tool` records a tool
+        # directive in go.mod so the dependency survives `go mod tidy`; then
+        # the gomobile/gobind binaries can be installed as usual.
         run: |
+          go get -tool golang.org/x/mobile/cmd/gobind
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
