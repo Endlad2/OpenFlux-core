@@ -29,7 +29,11 @@ if [ ! -d "$NDK_ROOT" ]; then
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/mobile/go.mod" ]; then
+if [ ! -f "$SCRIPT_DIR/go.mod" ]; then
+    echo "go.mod not found at $SCRIPT_DIR — run this script from the repository root."
+    exit 1
+fi
+if [ ! -d "$SCRIPT_DIR/mobile" ]; then
     echo "The mobile package is missing at $SCRIPT_DIR/mobile"
     exit 1
 fi
@@ -51,7 +55,9 @@ for ENTRY in "${PLATFORMS[@]}"; do
     echo ">>> Building AAR for android/${GOARCH} (${ABI}) ..."
 
     (
-        cd "$SCRIPT_DIR/mobile"
+        # The mobile bridge lives in ./mobile as part of the root module,
+        # so gomobile must run from the repo root and bind the ./mobile package.
+        cd "$SCRIPT_DIR"
         # github.com/wlynxg/anet (pulled in transitively by the oneme/WebRTC
         # transport) still uses a //go:linkname into net.zoneCache that Go's
         # linker rejects by default since the 1.23 linkname hardening; no
@@ -63,7 +69,7 @@ for ENTRY in "${PLATFORMS[@]}"; do
             -javapkg=io.openflux.bridge \
             -ldflags="-checklinkname=0" \
             -o "$OUT_AAR" \
-            .
+            ./mobile
     )
 
     echo "    -> $OUT_AAR"
