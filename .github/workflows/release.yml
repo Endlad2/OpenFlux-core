@@ -87,14 +87,56 @@ jobs:
             "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Build Android executables (all ABIs)
+        # Inlined here — no build-bin.sh dependency at the repo root.
         run: |
-          set -e
+          set -euo pipefail
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$SDK" ] || { echo "ANDROID_HOME/ANDROID_SDK_ROOT not set" >&2; exit 1; }
           export ANDROID_HOME="$SDK"
           export ANDROID_SDK_ROOT="$SDK"
-          export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$SDK/ndk/${ANDROID_NDK_VERSION}}"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing: $ANDROID_NDK_HOME" >&2; exit 1; }
-          bash build-bin.sh
+
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          [ -d "$TOOLCHAIN" ] || { echo "NDK toolchain not found: $TOOLCHAIN" >&2; exit 1; }
+
+          API="${ANDROID_API:-21}"
+          OUT_ROOT="dist/android"
+          rm -rf "$OUT_ROOT"
+
+          TARGETS=(
+            "arm64:aarch64-linux-android:arm64-v8a"
+            "arm:armv7a-linux-androideabi:armeabi-v7a"
+            "amd64:x86_64-linux-android:x86_64"
+          )
+
+          for ENTRY in "${TARGETS[@]}"; do
+            IFS=: read -r GOARCH_FOR_TARGET NDK_TRIPLE ABI_DIR <<<"$ENTRY"
+
+            CC="$TOOLCHAIN/bin/${NDK_TRIPLE}${API}-clang"
+            CXX="$TOOLCHAIN/bin/${NDK_TRIPLE}${API}-clang++"
+            [ -x "$CC" ] || { echo "missing compiler: $CC" >&2; exit 1; }
+
+            OUT_DIR="$OUT_ROOT/$ABI_DIR"
+            mkdir -p "$OUT_DIR"
+
+            echo "==> $ABI_DIR (GOARCH=$GOARCH_FOR_TARGET, CC=$CC)"
+            env \
+              GOOS=android \
+              GOARCH="$GOARCH_FOR_TARGET" \
+              CGO_ENABLED=1 \
+              CC="$CC" \
+              CXX="$CXX" \
+              go build \
+                -trimpath \
+                -ldflags "-s -w -extldflags '-pie'" \
+                -o "$OUT_DIR/libopenflux.so" \
+                .
+          done
+
+          echo "Done. Artifacts:"
+          find "$OUT_ROOT" -type f -exec file {} \;
 
       - name: Verify every artifact is a PIE ELF
         run: |
