@@ -7,13 +7,15 @@
 #   scripts/build-android-core.sh              # uses this checkout
 #   scripts/build-android-core.sh ../OpenFlux  # or any other checkout
 #
-# Needs Go 1.24+, gomobile (go install golang.org/x/mobile/cmd/gomobile@latest)
-# and the Android SDK with NDK 27 (ANDROID_HOME / ANDROID_NDK_HOME, or the SDK
-# in its default place).
+# Needs Go, gomobile (go install golang.org/x/mobile/cmd/gomobile@latest) and
+# the Android SDK with NDK 27 (ANDROID_HOME / ANDROID_NDK_HOME, or the SDK in
+# its default place).
 #
-# gomobile bind in Go 1.24+ refuses to run when golang.org/x/mobile is not in
-# the module graph (go.dev/issue/77183). go.mod keeps it via the `tool`
-# directive and mobile/bind_tool.go, so a plain `go mod tidy` will not drop it.
+# This is the OpenFlux-core side of the build. The Android app's own
+# scripts/build-android-core.sh calls exactly this, so keeping the two in
+# sync (same -javapkg, same -androidapi, same -ldflags) is what makes the
+# Java class io.openflux.bridge.mobile.Mobile line up with
+# AndroidConnectionService.kt.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,34 +24,6 @@ core=$(cd "${1:-$root}" && pwd)
   echo "$core has no mobile/ package. Run from an OpenFlux core checkout that ships mobile/." >&2
   exit 1
 }
-
-# ---- preflight: gomobile and x/mobile in the module graph ----------------
-# Fail here, with an actionable message, instead of inside `gomobile bind`
-# after it has already spent time on the NDK/SDK discovery.
-if ! grep -q 'golang.org/x/mobile' "$core/go.mod"; then
-  cat >&2 <<'EOF'
-go.mod does not reference golang.org/x/mobile, so `gomobile bind` will refuse
-to run (go.dev/issue/77183). Add it with:
-
-    go get -tool golang.org/x/mobile/cmd/gobind
-    go mod tidy
-
-and make sure mobile/bind_tool.go exists (the //go:build tools blank import
-keeps the module in the graph across `go mod tidy`).
-EOF
-  exit 1
-fi
-
-# ---- preflight: go.sum is consistent with go.mod --------------------------
-# `go mod tidy` is what repairs go.sum after a go.mod edit. Do it here rather
-# than in CI alone, so a local build and CI agree, and the "missing go.sum
-# entry for module providing package X" class of failures cannot reach
-# gomobile bind.
-if ! (cd "$core" && go mod tidy >/dev/null 2>&1); then
-  echo "go mod tidy failed; run it manually and fix the first error:" >&2
-  (cd "$core" && go mod tidy) >&2 || true
-  exit 1
-fi
 
 # Output goes to the Android app's libs/ when we are inside it, otherwise to
 # the core's own output/ so a standalone build still works.
@@ -62,7 +36,11 @@ else
 fi
 mkdir -p "$out"
 
-# ---- SDK ----------------------------------------------------------------
+# --- SDK discovery -----------------------------------------------------------
+# Order matters: if the caller explicitly set ANDROID_HOME, that wins. The
+# sdkmanager-installed SDK on a GitHub runner is exactly ANDROID_HOME. On a
+# developer machine it is usually ANDROID_HOME, then ANDROID_SDK_ROOT, then
+# one of the conventional per-OS locations.
 sdk="${ANDROID_HOME:-}"
 [ -n "$sdk" ] || sdk="${ANDROID_SDK_ROOT:-}"
 if [ -z "$sdk" ]; then
@@ -78,15 +56,20 @@ fi
   exit 1
 }
 
-# ---- NDK ----------------------------------------------------------------
-# ANDROID_NDK_HOME wins (CI sets it); otherwise the newest side-by-side
-# install under $SDK/ndk, so a fresh `sdkmanager "ndk;27.x"` keeps working
-# even if the exact folder name changes.
+# --- NDK discovery -----------------------------------------------------------
+# Accept an explicit ANDROID_NDK_HOME first (that is what CI sets), then the
+# side-by-side install under the SDK. Do NOT default to a hard-coded version
+# path that may not exist — list what is there and pick the newest rXX, so a
+# fresh `sdkmanager "ndk;27.0.12077973"` keeps working even if the folder name
+# differs on some installs.
 ndk="${ANDROID_NDK_HOME:-}"
-if [ -z "$ndk" ] && [ -d "$sdk/ndk" ]; then
-  ndk=$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
-        | sort -V | tail -n1)
-  [ -n "$ndk" ] && ndk="$sdk/ndk/$ndk"
+if [ -z "$ndk" ]; then
+  if [ -d "$sdk/ndk" ]; then
+    # Highest version wins (sort -V), ignoring "source.properties" and friends.
+    ndk=$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
+          | sort -V | tail -n1)
+    [ -n "$ndk" ] && ndk="$sdk/ndk/$ndk"
+  fi
 fi
 [ -n "$ndk" ] && [ -d "$ndk" ] || {
   echo "Android NDK not found. Set ANDROID_NDK_HOME, or install one with:" >&2
@@ -97,7 +80,7 @@ fi
 echo "Using SDK: $sdk"
 echo "Using NDK: $ndk"
 
-# ---- gomobile -----------------------------------------------------------
+# --- gomobile ----------------------------------------------------------------
 gomobile=${GOMOBILE_BIN:-$(command -v gomobile || true)}
 [ -n "$gomobile" ] || gomobile="$(go env GOPATH)/bin/gomobile"
 [ -x "$gomobile" ] || [ -x "$gomobile.exe" ] || {

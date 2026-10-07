@@ -19,9 +19,6 @@ env:
   # job does not depend on ${{ env.ANDROID_HOME }} (which is empty — env.* only
   # contains what this file sets, not the runner's own environment).
   ANDROID_NDK_VERSION: "27.0.12077973"
-  # The exact x/mobile revision CI installs; kept in sync with go.mod's
-  # `tool golang.org/x/mobile/cmd/gobind` / `require golang.org/x/mobile`.
-  X_MOBILE_VERSION: "v0.0.0-20260908204917-8b95e45f8d3e"
 
 jobs:
   build:
@@ -34,12 +31,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      # go.sum must be consistent with go.mod before vet/build. This is the
-      # step that repairs "missing go.sum entry for module providing package
-      # ..." after a go.mod edit — the same failure this job hit before.
-      - name: Sync go.sum
-        run: go mod tidy
 
       - name: Vet
         run: go vet ./...
@@ -66,9 +57,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - name: Sync go.sum
-        run: go mod tidy
 
       - name: Test
         # The existing test job historically swallowed failures with `|| true`;
@@ -101,9 +89,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - name: Sync go.sum
-        run: go mod tidy
 
       - name: Build CLI
         env:
@@ -144,28 +129,10 @@ jobs:
             "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Install gomobile
-        # Same revision as go.mod's tool/require directives, so gomobile and
-        # the module graph agree. Installs both binaries; gomobile shells out
-        # to gobind, and both must be on PATH.
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@${X_MOBILE_VERSION}
-          go install golang.org/x/mobile/cmd/gobind@${X_MOBILE_VERSION}
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Sync go.sum and keep x/mobile in go.mod
-        # Belt and braces for go.dev/issue/77183: gomobile bind needs
-        # golang.org/x/mobile as a module dependency. The `tool` directive in
-        # go.mod plus mobile/bind_tool.go (//go:build tools) hold it in;
-        # verify that here, before invoking bind.
-        run: |
-          set -e
-          go mod tidy
-          grep -q 'golang.org/x/mobile' go.mod || {
-            echo "golang.org/x/mobile fell out of go.mod after 'go mod tidy'" >&2
-            echo "Restore the 'tool golang.org/x/mobile/cmd/gobind' directive" >&2
-            echo "and the blank import in mobile/bind_tool.go." >&2
-            exit 1
-          }
+          go get -tool golang.org/x/mobile/cmd/gobind
+          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
       - name: Build the .aar
         # Set ANDROID_NDK_HOME to the actual path just installed, computed in
