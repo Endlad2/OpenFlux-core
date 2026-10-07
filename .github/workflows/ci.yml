@@ -98,10 +98,12 @@ jobs:
         run: go build -trimpath -o /dev/null .
 
   android-core:
-    name: Android core (gomobile bind)
+    name: Android core (gomobile bind, per-ABI AARs)
     runs-on: ubuntu-latest
-    # Builds the .aar the Android app links against, so a broken mobile/
-    # package fails CI here instead of in the app's release job.
+    # Builds the per-ABI .aar files the Android app links against, so a broken
+    # mobile package fails CI here instead of in the app's release job.
+    # Uses ./build-aar.sh, which lives at the repo root and produces
+    # dist/openflux-android-{arm64-v8a,armeabi-v7a,x86_64}.aar.
     steps:
       - uses: actions/checkout@v4
 
@@ -109,11 +111,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
 
       - name: Install Android SDK components
         # $ANDROID_HOME here is the runner's environment variable, not a
@@ -130,11 +127,10 @@ jobs:
 
       - name: Install gomobile
         run: |
-          go get -tool golang.org/x/mobile/cmd/gobind
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
-      - name: Build the .aar
+      - name: Build the .aar files
         # Set ANDROID_NDK_HOME to the actual path just installed, computed in
         # the shell. Do NOT use ${{ env.ANDROID_HOME }} — it is empty.
         run: |
@@ -145,26 +141,29 @@ jobs:
           export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing" >&2; exit 1; }
-          bash scripts/build-android-core.sh
+          bash build-aar.sh
 
-      - name: Verify the Java class name
+      - name: Verify the Java class name in every AAR
         # The Android app imports io.openflux.bridge.mobile.Mobile; a rename
-        # here would break every Kotlin call site, so guard it explicitly.
+        # here would break every Kotlin call site, so guard it explicitly
+        # for each ABI artifact.
         run: |
           set -e
-          AAR="output/android/openflux.aar"
-          [ -f "$AAR" ] || { echo "$AAR was not produced" >&2; exit 1; }
-          unzip -l "$AAR" | grep -q 'classes.jar' || { echo "$AAR has no classes.jar" >&2; exit 1; }
-          rm -rf /tmp/aar && mkdir -p /tmp/aar && cd /tmp/aar
-          unzip -o "$GITHUB_WORKSPACE/$AAR" classes.jar >/dev/null
-          unzip -l classes.jar | tee /tmp/classes.txt
-          grep -q 'io/openflux/bridge/mobile/Mobile.class' /tmp/classes.txt || {
-            echo "expected io/openflux/bridge/mobile/Mobile.class in the .aar" >&2
-            exit 1
-          }
+          for AAR in dist/openflux-android-*.aar; do
+            [ -f "$AAR" ] || { echo "no AAR matched $AAR" >&2; exit 1; }
+            unzip -l "$AAR" | grep -q 'classes.jar' || { echo "$AAR has no classes.jar" >&2; exit 1; }
+            rm -rf /tmp/aar && mkdir -p /tmp/aar && cd /tmp/aar
+            unzip -o "$GITHUB_WORKSPACE/$AAR" classes.jar >/dev/null
+            unzip -l classes.jar | tee /tmp/classes.txt
+            grep -q 'io/openflux/bridge/mobile/Mobile.class' /tmp/classes.txt || {
+              echo "expected io/openflux/bridge/mobile/Mobile.class in $AAR" >&2
+              exit 1
+            }
+            cd "$GITHUB_WORKSPACE"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: openflux-aar
-          path: output/android/openflux.aar
+          path: dist/openflux-android-*.aar
           if-no-files-found: error

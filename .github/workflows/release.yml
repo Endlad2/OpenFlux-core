@@ -65,11 +65,11 @@ jobs:
             ${{ matrix.archive }}.tar.gz.sha256
 
   build-mobile:
-    name: Android core (.aar)
+    name: Android core (.aar, per ABI)
     runs-on: ubuntu-latest
-    # The artifact the Android app links: gomobile bind over mobile/. Replaces
-    # the old per-ABI `go build` of the CLI, which produced a binary the app
-    # could not use.
+    # The artifacts the Android app links: per-ABI AARs produced by
+    # ./build-aar.sh, which runs gomobile bind once per target
+    # (arm64 -> arm64-v8a, arm -> armeabi-v7a, amd64 -> x86_64).
     steps:
       - uses: actions/checkout@v4
 
@@ -77,11 +77,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
 
       - name: Install Android SDK components
         run: |
@@ -97,7 +92,7 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 
-      - name: Build the .aar
+      - name: Build the .aar files
         run: |
           set -e
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -105,16 +100,16 @@ jobs:
           export ANDROID_SDK_ROOT="$SDK"
           export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
           [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing: $ANDROID_NDK_HOME" >&2; exit 1; }
-          bash scripts/build-android-core.sh
+          bash build-aar.sh
 
       - name: Package
         shell: bash
         run: |
           set -e
-          mkdir -p dist
-          cp output/android/openflux.aar dist/
-          cp output/android/openflux-core.version dist/
-          cd dist
+          mkdir -p out
+          cp dist/openflux-android-*.aar out/
+          cd out
+          sha256sum openflux-android-*.aar > SHA256SUMS
           zip -r ../openflux-android-aar.zip .
           cd ..
           sha256sum openflux-android-aar.zip > openflux-android-aar.zip.sha256
