@@ -98,12 +98,12 @@ jobs:
         run: go build -trimpath -o /dev/null .
 
   android-core:
-    name: Android core (gomobile bind, per-ABI AARs)
+    name: Android core (NDK-built PIE binaries, per ABI)
     runs-on: ubuntu-latest
-    # Builds the per-ABI .aar files the Android app links against, so a broken
-    # mobile package fails CI here instead of in the app's release job.
-    # Uses ./build-aar.sh, which lives at the repo root and produces
-    # dist/openflux-android-{arm64-v8a,armeabi-v7a,x86_64}.aar.
+    # Builds standalone PIE executables for Android via the NDK clang
+    # toolchain. These are meant to be shipped inside an APK
+    # (jniLibs/<abi>/lib<name>.so) and launched from
+    # ApplicationInfo.nativeLibraryDir via ProcessBuilder — not JNI.
     steps:
       - uses: actions/checkout@v4
 
@@ -125,17 +125,10 @@ jobs:
           "$SDK/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Install gomobile
-        # Modern gomobile refuses to run unless golang.org/x/mobile is part of
-        # THIS module's dependency graph. `go get -tool` records a tool
-        # directive in go.mod so the dependency survives `go mod tidy`; then
-        # the gomobile/gobind binaries can be installed as usual.
-        run: |
-          go get -tool golang.org/x/mobile/cmd/gobind
-          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
-          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
-
-      - name: Build the .aar files
+      - name: Build Android executables (all ABIs)
+        # GOOS=android requires CGO_ENABLED=1 (bionic libc link against NDK).
+        # Each binary is a PIE ELF, namespaced as lib*.so so it can live in
+        # jniLibs/<abi>/ and be extracted to nativeLibraryDir on device.
         # Set ANDROID_NDK_HOME to the actual path just installed, computed in
         # the shell. Do NOT use ${{ env.ANDROID_HOME }} — it is empty.
         run: |
@@ -145,30 +138,30 @@ jobs:
           export ANDROID_SDK_ROOT="$SDK"
           export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing" >&2; exit 1; }
-          bash build-aar.sh
+          [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing: $ANDROID_NDK_HOME" >&2; exit 1; }
+          bash build-bin.sh
 
-      - name: Verify the Java class name in every AAR
-        # The Android app imports io.openflux.bridge.mobile.Mobile; a rename
-        # here would break every Kotlin call site, so guard it explicitly
-        # for each ABI artifact.
+      - name: Verify every artifact is a PIE ELF
+        # Guards against an accidental switch back to static/non-PIE output:
+        # Android 5+ refuses to exec non-PIE binaries.
         run: |
           set -e
-          for AAR in dist/openflux-android-*.aar; do
-            [ -f "$AAR" ] || { echo "no AAR matched $AAR" >&2; exit 1; }
-            unzip -l "$AAR" | grep -q 'classes.jar' || { echo "$AAR has no classes.jar" >&2; exit 1; }
-            rm -rf /tmp/aar && mkdir -p /tmp/aar && cd /tmp/aar
-            unzip -o "$GITHUB_WORKSPACE/$AAR" classes.jar >/dev/null
-            unzip -l classes.jar | tee /tmp/classes.txt
-            grep -q 'io/openflux/bridge/mobile/Mobile.class' /tmp/classes.txt || {
-              echo "expected io/openflux/bridge/mobile/Mobile.class in $AAR" >&2
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          READELF="$SDK/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          [ -x "$READELF" ] || { echo "llvm-readelf not found: $READELF" >&2; exit 1; }
+          for BIN in dist/android/*/lib*.so; do
+            [ -f "$BIN" ] || { echo "no binary matched $BIN" >&2; exit 1; }
+            echo "== $BIN"
+            file "$BIN"
+            "$READELF" -h "$BIN" | grep -E 'Type:|Machine:'
+            "$READELF" -h "$BIN" | grep -q 'DYN (Position-Independent Executable' || {
+              echo "$BIN is not a PIE executable" >&2
               exit 1
             }
-            cd "$GITHUB_WORKSPACE"
           done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openflux-aar
-          path: dist/openflux-android-*.aar
+          name: openflux-android-bin
+          path: dist/android/
           if-no-files-found: error

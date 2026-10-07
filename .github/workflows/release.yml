@@ -65,11 +65,10 @@ jobs:
             ${{ matrix.archive }}.tar.gz.sha256
 
   build-mobile:
-    name: Android core (.aar, per ABI)
+    name: Android core (NDK-built PIE binaries, per ABI)
     runs-on: ubuntu-latest
-    # The artifacts the Android app links: per-ABI AARs produced by
-    # ./build-aar.sh, which runs gomobile bind once per target
-    # (arm64 -> arm64-v8a, arm -> armeabi-v7a, amd64 -> x86_64).
+    # Shipped as standalone PIE executables, not JNI/AAR. On-device they live
+    # in jniLibs/<abi>/lib<name>.so and are launched from nativeLibraryDir.
     steps:
       - uses: actions/checkout@v4
 
@@ -87,17 +86,7 @@ jobs:
           "$SDK/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-35" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Install gomobile
-        # Modern gomobile refuses to run unless golang.org/x/mobile is part of
-        # THIS module's dependency graph. `go get -tool` records a tool
-        # directive in go.mod so the dependency survives `go mod tidy`; then
-        # the gomobile/gobind binaries can be installed as usual.
-        run: |
-          go get -tool golang.org/x/mobile/cmd/gobind
-          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
-          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
-
-      - name: Build the .aar files
+      - name: Build Android executables (all ABIs)
         run: |
           set -e
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -105,26 +94,46 @@ jobs:
           export ANDROID_SDK_ROOT="$SDK"
           export ANDROID_NDK_HOME="$SDK/ndk/${ANDROID_NDK_VERSION}"
           [ -d "$ANDROID_NDK_HOME" ] || { echo "NDK dir missing: $ANDROID_NDK_HOME" >&2; exit 1; }
-          bash build-aar.sh
+          bash build-bin.sh
+
+      - name: Verify every artifact is a PIE ELF
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          READELF="$SDK/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          [ -x "$READELF" ] || { echo "llvm-readelf not found: $READELF" >&2; exit 1; }
+          for BIN in dist/android/*/lib*.so; do
+            [ -f "$BIN" ] || { echo "no binary matched $BIN" >&2; exit 1; }
+            echo "== $BIN"
+            file "$BIN"
+            "$READELF" -h "$BIN" | grep -E 'Type:|Machine:'
+            "$READELF" -h "$BIN" | grep -q 'DYN (Position-Independent Executable' || {
+              echo "$BIN is not a PIE executable" >&2
+              exit 1
+            }
+          done
 
       - name: Package
         shell: bash
         run: |
           set -e
           mkdir -p out
-          cp dist/openflux-android-*.aar out/
-          cd out
-          sha256sum openflux-android-*.aar > SHA256SUMS
-          zip -r ../openflux-android-aar.zip .
-          cd ..
-          sha256sum openflux-android-aar.zip > openflux-android-aar.zip.sha256
+          # Flatten dist/android/<abi>/lib*.so -> out/<abi>/
+          for ABI_DIR in dist/android/*/; do
+            ABI="$(basename "$ABI_DIR")"
+            mkdir -p "out/$ABI"
+            cp "$ABI_DIR"/lib*.so "out/$ABI/"
+          done
+          (cd out && find . -type f -exec sha256sum {} \; > SHA256SUMS)
+          zip -r openflux-android-bin.zip out
+          sha256sum openflux-android-bin.zip > openflux-android-bin.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openflux-android-aar
+          name: openflux-android-bin
           path: |
-            openflux-android-aar.zip
-            openflux-android-aar.zip.sha256
+            openflux-android-bin.zip
+            openflux-android-bin.zip.sha256
 
   build-ios:
     name: iOS core
